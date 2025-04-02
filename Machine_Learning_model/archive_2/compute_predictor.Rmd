@@ -1,0 +1,371 @@
+---
+title: "fight winner predictor"
+author: "Bruno Álvarez"
+date: "2024-12-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load libraries}
+# Load necessary libraries
+library(tidyverse)
+library(caret)
+library(randomForest)
+```
+
+```{r load data}
+setwd("/home/bruno/other/ufc_winer_predictor_money_money/archive_2")
+fights_data <- read.csv("./data.csv")
+```
+
+
+```{r view the data}
+#View(fights_data)
+
+dim(fights_data)
+
+table(fights_data$Winner)
+```
+
+```{r check of an internet dude assertion}
+
+#an internet dummy said that the first 1000 cases were all red wins, so I'm gona double check it because his posted code is wrong and is hardcoded to print the same number of red wins allways without computing
+
+#extract the first 1000 rows of the dataset
+first_1000_fights <- fights_data[1:1000, ]
+
+#check if all winners in the first 1000 rows are "Red"
+all_red_wins <- all(first_1000_fights$Winner == "Red")
+
+#provide appropriate output
+if (all_red_wins) {
+  cat("All of the first 1000 fights have been recorded as red wins.\n")
+} else {
+  # Find the first non-Red winner
+  first_non_red_index <- which(first_1000_fights$Winner != "Red")[1]
+  cat("Not all of the first 1000 fights have red as the winner.\n")
+  cat("The first non-red winner appears at index", first_non_red_index, "in the dataset.\n")
+}
+
+```
+
+```{r now we check if there are maybe too many red winners}
+#I'm checking to see if maybe there are to many red winners because I got a 0.6 accuracy and in the confusion matrix apeared way to many red and way to little blues
+# Count the occurrences of each winner
+winner_counts <- table(fights_data$Winner)
+
+# Display the counts
+cat("Red winners:", winner_counts["Red"], "\n")
+cat("Blue winners:", winner_counts["Blue"], "\n")
+
+```
+
+```{r checking in chronological order}
+
+#So I've found the first 1000 instances being only red ones appears when itterating in chronological order and that
+#to itterate in chronological order you need to go backwards, begining from the end and itterating to the top
+
+# Reverse the dataset
+reversed_data <- fights_data[nrow(fights_data):1, ]
+
+# Find the first instance of "Blue" winner
+blue_index <- which(reversed_data$Winner == "Blue")[1]
+
+# Calculate the number of "Red-only" fights
+red_only_count <- nrow(fights_data) - blue_index
+
+cat("The first", red_only_count, "fights have been recorded as red wins\n")
+
+# Display the first 10 rows of the reversed dataset
+head(reversed_data, 10)
+
+cat("........................................................................\n")
+
+# Display the last 10 rows of the "Red-only" period
+tail(reversed_data[1:(nrow(reversed_data) - red_only_count), ], 10)
+
+```
+
+```{r}
+#now we will consequently remove this rows that are biasing our data
+#since the dude from the internet seems to be right and removing 4725 rows out of 6012 is too much, I will suppose
+#that the dude from the internet was right about the first 1289 being only red is biased and I will only remove those
+#however I don't know why the rest are correct so i leave the link to the dudes code and conclusions here below
+#https://www.kaggle.com/code/conalltimoney/predicting-the-winner-of-ufc-fights
+unbiased_data <- fights_data[-(1:1289), ]  #exclude first 1289 rows
+
+table(unbiased_data$Winner)
+
+```
+
+
+```{r clear the data}
+#clean everything in the data. Remove Nas, empty values and null values
+
+
+#check for non-NaN entries in each column
+non_nan_reach <- sum(!is.na(unbiased_data$Reach))
+non_nan_stance <- sum(!is.na(unbiased_data$Stance))
+non_nan_dob <- sum(!is.na(unbiased_data$DOB))
+total_entries <- nrow(unbiased_data)
+
+#print the counts
+cat("The number of non-NaN Reach entries is:", non_nan_reach, "\n")
+cat("The number of non-NaN Stance entries is:", non_nan_stance, "\n")
+cat("The number of non-NaN DOB entries is:", non_nan_dob, "\n")
+cat("The total number of entries is:", total_entries, "\n")
+
+
+#exclude columns with insufficient data
+if (non_nan_reach < total_entries * 0.1) {  #example threshold: less than 10% complete
+  cat("Reach will not be used in the analysis.\n")
+  unbiased_data$Reach <- NULL
+}
+
+if (non_nan_stance < total_entries * 0.1) {
+  cat("Stance will not be used in the analysis.\n")
+  unbiased_data$Stance <- NULL
+}
+
+if (non_nan_dob < total_entries * 0.1) {
+  cat("DOB will not be used in the analysis.\n")
+  unbiased_data$DOB <- NULL
+}
+
+
+fights_data_cleaned <- unbiased_data[!apply(unbiased_data, 1, function(row) any(row == "" | is.na(row) | is.null(row))), ]
+dim(fights_data_cleaned)
+#View(fights_data_cleaned)
+```
+
+
+```{r exploratory data analysis}
+table(fights_data_cleaned$Winner)
+#plot(fights_data_cleaned$Winner)
+
+str(fights_data_cleaned)
+```
+
+
+```{r preparing data 1}
+
+#retrive columns that are not suposed to be numeric
+non_numeric_cols <- sapply(fights_data_cleaned, class) != "numeric"
+print(colnames(fights_data_cleaned)[non_numeric_cols])
+
+```
+
+
+```{r preparing data 2}
+
+# Convert to logical
+fights_data_cleaned$title_bout <- fights_data_cleaned$title_bout == "True"
+
+# Confirm the conversion
+table(fights_data_cleaned$title_bout, useNA = "ifany")
+
+
+# Convert specific columns to factors
+factor_cols <- c("R_fighter", "B_fighter", "Referee", "date", "location", 
+                 "Winner", "weight_class", "B_Stance", "R_Stance")
+
+fights_data_cleaned[factor_cols] <- lapply(fights_data_cleaned[factor_cols], as.factor)
+
+# Identify columns that should be numeric
+numeric_cols <- setdiff(colnames(fights_data_cleaned)[non_numeric_cols], factor_cols)
+
+# Convert them to numeric
+fights_data_cleaned[numeric_cols] <- lapply(fights_data_cleaned[numeric_cols], function(x) as.numeric(as.character(x)))
+
+# Check column classes
+sapply(fights_data_cleaned, class)
+
+# Delete the title_bout column
+fights_data_cleaned <- fights_data_cleaned %>% select(-title_bout)
+
+class(fights_data_cleaned$Winner)
+
+levels(fights_data_cleaned$Winner)
+
+# Ensure the Winner column is a factor
+fights_data_cleaned$Winner <- as.factor(fights_data_cleaned$Winner)
+
+#we need to exclude the following columns as they exceed the maximum cardinality permited by randomforest (which is 53)
+fights_data_cleaned <- fights_data_cleaned %>% select(-R_fighter, -B_fighter, -Referee, -date, -location)
+
+```
+
+```{r create test and train data sets}
+
+train_index <- createDataPartition(fights_data_cleaned$Winner, p = 0.8, list = FALSE)
+train_data <- fights_data_cleaned[train_index, ]
+test_data <- fights_data_cleaned[-train_index, ]
+
+```
+
+```{r no se que estoy haciendo parte 1}
+
+#ensure the levels of the 'Winner' factor match between train and test sets
+test_data$Winner <- factor(test_data$Winner, levels = levels(train_data$Winner))
+
+#train model
+rf_model <- randomForest(Winner ~ ., data = train_data, importance = TRUE, ntree = 100)
+
+#make predictions with test cases
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+#evaluate the model with a confusion matrix
+confusionMatrix(rf_predictions, test_data$Winner)
+
+#we have a 0.6 accuracy so I guess its either too many variables or there is a bias because there are too many red cases
+```
+
+
+```{r see importance of each variable}
+#variable importance
+#evaluates the effect/importance of each variable (there are 140) in the model and creates a plote to visualize it
+importance(rf_model)
+varImpPlot(rf_model)
+```
+
+
+```{r SMOTE (Synthetic Minority Over-sampling Technique)}
+#install.packages("ROSE")
+
+library(ROSE)
+
+fights_data_binary <- fights_data_cleaned[fights_data_cleaned$Winner != "Draw", ]
+
+# Apply ROSE to balance the dataset
+balanced_data <- ROSE(Winner ~ ., data = fights_data_cleaned, seed = 42)$data
+
+# Check the class distribution after balancing
+table(balanced_data$Winner)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r feature extraction}
+#extract the 10 best features
+
+# Assuming you have your rf_model and importance data
+# Calculate variable importance
+var_imp <- importance(rf_model)
+
+# Rank features based on MeanDecreaseAccuracy
+top_features <- var_imp[order(var_imp[, "MeanDecreaseAccuracy"], decreasing = TRUE), ]
+
+# Select top 10 features
+top_10_features <- rownames(top_features)[1:10]
+
+# Check top 10 features
+print(top_10_features)
+
+
+```
+
+```{r feature selection with RFE}
+
+# Remove the 'Winner' column to get the features
+features <- fights_data_cleaned[, !(colnames(fights_data_cleaned) %in% "Winner")]
+
+# Get the target variable (labels)
+target <- fights_data_cleaned$Winner
+
+# Set up the control for RFE (we'll use random forest as the selection method)
+ctrl <- rfeControl(functions=rfFuncs, method="cv", number=10)
+
+# Perform RFE
+rfe_result <- rfe(features, target, sizes=c(1:10), rfeControl=ctrl)
+
+# View the result
+print(rfe_result)
+
+```
+
+```{r}
+
+train_labels <- fights_data_cleaned$Winner
+
+train_labels <- as.factor(fights_data_cleaned$Winner)
+
+data_feature_selection <- fights_data_cleaned[, top_10_features]  # Select top features from your dataset
+
+#adding the column winner
+data_feature_selection$winner <- fights_data_cleaned$Winner
+
+View(data_feature_selection)
+
+dim(data_feature_selection)
+
+#this created dataset is not used because in the caret function train we specify the 10 labels choosen
+```
+
+```{r creating train and test dataset}
+#defining the train and test datasets for the new dataset with the feature selection made
+train_index <- createDataPartition(data_feature_selection$winner, p = 0.8, list = FALSE)
+train_data <- data_feature_selection[train_index, ]
+test_data <- data_feature_selection[-train_index, ]
+```
+
+```{r Cross-Validation for model evaluation}
+#set up cross-validation
+train_control <- trainControl(method="cv", number=10)
+
+#training model with selected features and using cross validation
+model <- train(fights_data_cleaned[, top_10_features], train_labels, method="rf", trControl=train_control)
+
+#view performance
+print(model)
+
+```
+
+```{r Evaluate on the Test Data}
+#evaluate on the Test Data with the model, I'm expection around 0.6 accuracy
+rf_predictions <- predict(model, newdata = train_data)
+confusionMatrix(rf_predictions, train_data$winner)
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+```{r save model}
+# Save the model for future use
+saveRDS(rf_model, "ufc_outcome_model.rds")
+```
+
+
+

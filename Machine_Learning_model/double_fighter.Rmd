@@ -1,0 +1,36 @@
+---
+title: "generate predictive model"
+author: "Bruno Álvarez"
+date: "2024-12-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r loading libraries}
+#we load the data sets
+setwd("/home/bruno/other/ufc_winer_predictor_money_money/archive")
+
+fight_data <- read.csv("/home/bruno/other/ufc_winer_predictor_money_money/archive/ufc_fight_data.csv")
+fighter_data <- read.csv("/home/bruno/other/ufc_winer_predictor_money_money/archive/ufc_fighter_data.csv")
+```
+
+```{r view data}
+View(fight_data)
+View(fighter_data)
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
